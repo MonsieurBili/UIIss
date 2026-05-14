@@ -753,6 +753,47 @@ export default function CrimsonChat({ token, currentUser }) {
     return pc;
   }, [sendSignal]);
 
+  const createPeerConnectionWithTurn = useCallback((targetUsername, turn) => {
+    const configuration = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: `turn:issproject.metered.live:80`,
+          username: turn.username,
+          credential: turn.credential,
+        },
+        {
+          urls: `turn:issproject.metered.live:80?transport=tcp`,
+          username: turn.username,
+          credential: turn.credential,
+        },
+      ]
+    };
+
+    const pc = new RTCPeerConnection(configuration);
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, localStreamRef.current);
+      });
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        sendSignal({ targetUsername, type: "ICE_CANDIDATE", payload: event.candidate });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = event.streams[0];
+      }
+    };
+
+    peerConnectionRef.current = pc;
+    return pc;
+  }, [sendSignal]);
+
   // ── Curăță apelul ────────────────────────────────────────────────────────
   const cleanupCall = useCallback(() => {
     peerConnectionRef.current?.close();
@@ -771,7 +812,17 @@ export default function CrimsonChat({ token, currentUser }) {
     const stream = await startMicrophone();
     if (!stream) return;
 
-    const pc = createPeerConnection(caller);
+    let turn = { username: "", credential: "" };
+    try {
+      const res = await fetch(`${API_BASE}/turn/credentials`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (res.ok) turn = await res.json();
+    } catch (e) {
+      console.warn("TURN credentials fetch failed, falling back to STUN only:", e);
+    }
+
+    const pc = createPeerConnectionWithTurn(caller, turn);
     await pc.setRemoteDescription(new RTCSessionDescription(signal.payload));
 
     const answer = await pc.createAnswer();
@@ -907,9 +958,19 @@ export default function CrimsonChat({ token, currentUser }) {
     const stream = await startMicrophone();
     if (!stream) return;
 
+    let turn = { username: "", credential: "" };
+    try {
+      const res = await fetch(`${API_BASE}/turn/credentials`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (res.ok) turn = await res.json();
+    } catch (e) {
+      console.warn("TURN credentials fetch failed, falling back to STUN only:", e);
+    }
+
     setCallState({ type: "calling", peer: activePeer.username });
 
-    const pc = createPeerConnection(activePeer.username);
+    const pc = createPeerConnectionWithTurn(activePeer.username, turn);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
