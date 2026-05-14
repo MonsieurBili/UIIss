@@ -908,15 +908,16 @@ export default function CrimsonChat({ token, currentUser }) {
             }
             setCallState(prev => prev ? { ...prev, type: "active" } : null);
 
-          } else if (signal.type === "ICE_CANDIDATE") {
-            const pc = peerConnectionRef.current;
-            if (pc && signal.payload) {
+          }else if (signal.type === "ICE_CANDIDATE") {
+              const pc = peerConnectionRef.current;
+              // AICI E PROBLEMA! Dacă pc e null, ignoră complet candidatul!
+              if (pc && signal.payload) { 
               if (pc.remoteDescription) {
                 await pc.addIceCandidate(new RTCIceCandidate(signal.payload));
               } else {
                 iceCandidateBuffer.current.push(signal.payload);
               }
-            }
+              }
 
           } else if (signal.type === "HANGUP" || signal.type === "REJECT") {
             cleanupCall();
