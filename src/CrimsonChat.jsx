@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Client } from "@stomp/stompjs";
 import { useNavigate } from "react-router-dom";
+import SockJS from "sockjs-client"; // <-- IMPORT NOU AICI
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const API_BASE = `${import.meta.env.VITE_API_URL}/api`;
@@ -632,7 +633,6 @@ export default function CrimsonChat({ token, currentUser }) {
   const remoteAudioRef      = useRef(null);
   const peerConnectionRef   = useRef(null);
   const localStreamRef      = useRef(null);
-  // FIX #2: Buffer for ICE candidates that arrive before remote description is set
   const iceCandidateBuffer  = useRef([]);
 
   const jwt = token || localStorage.getItem("token") || "";
@@ -800,7 +800,6 @@ export default function CrimsonChat({ token, currentUser }) {
     peerConnectionRef.current = null;
     localStreamRef.current?.getTracks().forEach(t => t.stop());
     localStreamRef.current = null;
-    // FIX #2: Clear the ICE buffer on every call cleanup
     iceCandidateBuffer.current = [];
     setLocalStream(null);
     setCallState(null);
@@ -827,7 +826,6 @@ export default function CrimsonChat({ token, currentUser }) {
     const pc = createPeerConnectionWithTurn(caller, turn);
     await pc.setRemoteDescription(new RTCSessionDescription(signal.payload));
 
-    // FIX #2: Drain any ICE candidates that arrived before remote description
     for (const candidate of iceCandidateBuffer.current) {
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
     }
@@ -853,15 +851,11 @@ export default function CrimsonChat({ token, currentUser }) {
     cleanupCall();
   };
 
-  // ── Conexiune WebSocket ────────────────────────────────────────────────────
+  // ── Conexiune WebSocket (MODIFICATĂ PENTRU SOCKJS) ───────────────────────
   useEffect(() => {
-    // FIX #1: Use native WebSocket instead of SockJS to avoid http/https downgrade.
-    // SockJS forces http:// even when the page is served over HTTPS, causing a SecurityError.
-    // Native WebSocket respects wss:// correctly.
-    const wsUrl = WS_URL.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
-
     const client = new Client({
-      webSocketFactory: () => new WebSocket(wsUrl),
+      // IMPORTANT: Folosim direct URL-ul HTTP/HTTPS pentru SockJS, NU îl înlocuim cu wss://
+      webSocketFactory: () => new SockJS(WS_URL), 
       connectHeaders: { Authorization: `Bearer ${jwt}` },
       reconnectDelay: 5000,
 
@@ -907,7 +901,6 @@ export default function CrimsonChat({ token, currentUser }) {
             const pc = peerConnectionRef.current;
             if (pc) {
               await pc.setRemoteDescription(new RTCSessionDescription(signal.payload));
-              // FIX #2: Drain buffered ICE candidates now that remote description is set
               for (const candidate of iceCandidateBuffer.current) {
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));
               }
@@ -919,10 +912,8 @@ export default function CrimsonChat({ token, currentUser }) {
             const pc = peerConnectionRef.current;
             if (pc && signal.payload) {
               if (pc.remoteDescription) {
-                // Remote description already set — add immediately
                 await pc.addIceCandidate(new RTCIceCandidate(signal.payload));
               } else {
-                // Too early — buffer for later
                 iceCandidateBuffer.current.push(signal.payload);
               }
             }
