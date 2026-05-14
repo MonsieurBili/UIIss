@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Client } from "@stomp/stompjs";
-import SockJS from "sockjs-client";
 import { useNavigate } from "react-router-dom";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -630,9 +629,11 @@ export default function CrimsonChat({ token, currentUser }) {
 
   // ── State & Refs ──
   const [localStream, setLocalStream] = useState(null);
-  const remoteAudioRef = useRef(null);
-  const peerConnectionRef = useRef(null);
-  const localStreamRef = useRef(null);
+  const remoteAudioRef      = useRef(null);
+  const peerConnectionRef   = useRef(null);
+  const localStreamRef      = useRef(null);
+  // FIX #2: Buffer for ICE candidates that arrive before remote description is set
+  const iceCandidateBuffer  = useRef([]);
 
   const jwt = token || localStorage.getItem("token") || "";
   const me  = currentUser
@@ -649,9 +650,6 @@ export default function CrimsonChat({ token, currentUser }) {
   const [navActive,     setNavActive]     = useState("messages");
 
   // ── CALL STATE ──
-  // null | { type: "calling", peer: string }
-  //       | { type: "active",  peer: string }
-  //       | { type: "incoming", caller: string, signal: object }
   const [callState, setCallState] = useState(null);
 
   const activeConvRef = useRef(null);
@@ -754,9 +752,11 @@ export default function CrimsonChat({ token, currentUser }) {
   }, [sendSignal]);
 
   const createPeerConnectionWithTurn = useCallback((targetUsername, turn) => {
-    const configuration = {
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
+    const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+
+    // Only add TURN servers if we have valid credentials
+    if (turn.username && turn.credential) {
+      iceServers.push(
         {
           urls: `turn:issproject.metered.live:80`,
           username: turn.username,
@@ -766,11 +766,11 @@ export default function CrimsonChat({ token, currentUser }) {
           urls: `turn:issproject.metered.live:80?transport=tcp`,
           username: turn.username,
           credential: turn.credential,
-        },
-      ]
-    };
+        }
+      );
+    }
 
-    const pc = new RTCPeerConnection(configuration);
+    const pc = new RTCPeerConnection({ iceServers });
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => {
@@ -800,6 +800,8 @@ export default function CrimsonChat({ token, currentUser }) {
     peerConnectionRef.current = null;
     localStreamRef.current?.getTracks().forEach(t => t.stop());
     localStreamRef.current = null;
+    // FIX #2: Clear the ICE buffer on every call cleanup
+    iceCandidateBuffer.current = [];
     setLocalStream(null);
     setCallState(null);
   }, []);
@@ -825,6 +827,12 @@ export default function CrimsonChat({ token, currentUser }) {
     const pc = createPeerConnectionWithTurn(caller, turn);
     await pc.setRemoteDescription(new RTCSessionDescription(signal.payload));
 
+    // FIX #2: Drain any ICE candidates that arrived before remote description
+    for (const candidate of iceCandidateBuffer.current) {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+    iceCandidateBuffer.current = [];
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
@@ -847,8 +855,13 @@ export default function CrimsonChat({ token, currentUser }) {
 
   // ── Conexiune WebSocket ────────────────────────────────────────────────────
   useEffect(() => {
+    // FIX #1: Use native WebSocket instead of SockJS to avoid http/https downgrade.
+    // SockJS forces http:// even when the page is served over HTTPS, causing a SecurityError.
+    // Native WebSocket respects wss:// correctly.
+    const wsUrl = WS_URL.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
+
     const client = new Client({
-      webSocketFactory: () => new SockJS(WS_URL),
+      webSocketFactory: () => new WebSocket(wsUrl),
       connectHeaders: { Authorization: `Bearer ${jwt}` },
       reconnectDelay: 5000,
 
@@ -888,21 +901,30 @@ export default function CrimsonChat({ token, currentUser }) {
           const caller = signal.senderUsername;
 
           if (signal.type === "OFFER") {
-            // ← înlocuiește window.confirm cu UI-ul nostru
             setCallState({ type: "incoming", caller, signal });
 
           } else if (signal.type === "ANSWER") {
             const pc = peerConnectionRef.current;
             if (pc) {
               await pc.setRemoteDescription(new RTCSessionDescription(signal.payload));
+              // FIX #2: Drain buffered ICE candidates now that remote description is set
+              for (const candidate of iceCandidateBuffer.current) {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+              }
+              iceCandidateBuffer.current = [];
             }
-            // Trecem în ecranul "activ"
             setCallState(prev => prev ? { ...prev, type: "active" } : null);
 
           } else if (signal.type === "ICE_CANDIDATE") {
             const pc = peerConnectionRef.current;
             if (pc && signal.payload) {
-              await pc.addIceCandidate(new RTCIceCandidate(signal.payload));
+              if (pc.remoteDescription) {
+                // Remote description already set — add immediately
+                await pc.addIceCandidate(new RTCIceCandidate(signal.payload));
+              } else {
+                // Too early — buffer for later
+                iceCandidateBuffer.current.push(signal.payload);
+              }
             }
 
           } else if (signal.type === "HANGUP" || signal.type === "REJECT") {
