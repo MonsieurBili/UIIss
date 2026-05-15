@@ -757,18 +757,28 @@ export default function CrimsonChat({ token, currentUser }) {
     // Only add TURN servers if we have valid credentials
     if (turn.username && turn.credential) {
       iceServers.push(
+        // 1. Încercarea standard (rapidă, dar blocată de firewalls)
         {
           urls: `turn:issproject.metered.live:80`,
           username: turn.username,
           credential: turn.credential,
         },
+        // 2. Fallback pe portul 443 (UDP) - de obicei trece de routere
         {
-          urls: `turn:issproject.metered.live:80?transport=tcp`,
+          urls: `turn:issproject.metered.live:443`,
+          username: turn.username,
+          credential: turn.credential,
+        },
+        // 3. Fallback absolut (TCP pe 443) - se deghizează în trafic web (HTTPS)
+        // Dacă nici asta nu trece, înseamnă că ați tăiat cablul de net!
+        {
+          urls: `turn:issproject.metered.live:443?transport=tcp`,
           username: turn.username,
           credential: turn.credential,
         }
       );
     }
+    
 
     const pc = new RTCPeerConnection({ iceServers });
 
