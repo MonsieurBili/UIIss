@@ -757,7 +757,6 @@ export default function CrimsonChat({ token, currentUser }) {
     // Only add TURN servers if we have valid credentials
     if (turn.username && turn.credential) {
       iceServers.push(
-        // 1. Încercarea standard (rapidă, dar blocată de firewalls)
         {
           urls: `turn:issproject.metered.live:80`,
           username: turn.username,
